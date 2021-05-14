@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+
+import argparse
+from datetime import datetime
+from datetime import timedelta
+import os
+
+
+# GLOBALS
+
+
+LOG_PATH = "/home/jaluk8/Documents/org/workrec.log"
+WORK = 0
+FUN = 1
+TYPE_ABBREV = ["WRK", "FUN"]
+TYPES = ["work", "fun"]
+GROUPS = ["day", "week", "month", "type", "class", "all"]
+SORTS = ["time", "type", "class", "amount"]
+SORT_REV = {
+    "time": False,
+    "type": False,
+    "class": False,
+    "amount": True
+}
+KEYS = {
+    "day" : (lambda e: e.day),
+    "week": (lambda e: e.week()),
+    "month": (lambda e: e.month()),
+    "time" : (lambda e: e.time),
+    "type" : (lambda e: e.type),
+    "class" : (lambda e: e.cls),
+    "amount" : (lambda e: e.amount),
+    "all" : (lambda e: "all")
+}
+TIMES = ["day", "week", "month", "all"]
+
+
+# CLASSES
+
+
+class Settings:
+    group = "type"
+    filter_target = "all"
+    filter_exp = "all"
+    sort = "amount"
+    time = "day"
+    limit = float("inf")
+    
+    def __init__(self, args):
+        if args.g:
+            self.group=args.g[0]
+        if args.f:
+            self.filter_target = Settings.target(args.f[0])
+            self.filter_exp = args.f[0]
+        if args.s:
+            self.sort = args.s[0]
+        if args.t:
+            self.time = args.t[0]
+        if args.l:
+            self.limit = int(args.l[0])
+
+    @staticmethod
+    def target(name):
+        if name in TYPES:
+            return "type"
+        elif name == "all":
+            return "all"
+        else:
+            return "class"
+
+    def __str__(self):
+        return str({"group": self.group,
+                    "filter_target": self.filter_target,
+                    "filter_exp": self.filter_exp,
+                    "sort": self.sort,
+                    "time": self.time})
+
+
+class Group:
+    def __init__(self, name, settings):
+        self.name = name
+        self.sort_key = KEYS[settings.sort]
+        self.sort_rev = SORT_REV[settings.sort]
+        self.elements = []
+        self.settings = settings
+
+    def add(self, e):
+        for e2 in self.elements:
+            if e.tag() == e2.tag():
+                e2.add(e)
+                return
+        self.elements.append(e)
+
+    def sort(self):
+        self.elements.sort(key=self.sort_key, reverse=self.sort_rev)
+
+    def __str__(self):
+        out = ""
+        if not self.name.lower() == "all":
+            out += self.name + ":\n"
+
+        total = timedelta(0)
+        length = 0
+        for e in self.elements:
+            if length < self.settings.limit:
+                out += str(e) + "\n"
+                length += 1
+            total += e.amount
+
+        out += delta2str(total) + "  TOTAL\n"
+        return out
+
+
+class Element:
+    def __init__(self, line=None):
+        self.valid = True
+
+        line = line.strip()
+        items = line.split("  -  ")
+        if len(items) == 3:
+            self.valid = False
+            return
+        typ, name, start, stop = items
+
+        name_items = name.split(" ")
+        if len(name_items) < 2:
+            self.valid = False
+            return
+        
+        self.cls = name_items[0]
+        self.name = " ".join(name_items[1:])
+        self.type = TYPE_ABBREV.index(typ)
+
+        start = datetime.fromisoformat(start)
+        stop = datetime.fromisoformat(stop)
+        self.time = start
+        self.day = start.replace(minute=0, hour=0, second=0)
+        self.amount = stop - start
+
+    def week(self):
+        return self.day - timedelta(days=self.day.weekday())
+
+    def month(self):
+        return self.day.replace(day=1)
+
+    def tag(self):
+        return (self.type, self.cls, self.name)
+
+    def add(self, other):
+        assert self.tag() == other.tag()
+
+        self.time = min(self.time, other.time)
+        self.day = min(self.day, other.day)
+        self.amount = self.amount + other.amount
+
+    def __str__(self):
+        time = delta2str(self.amount)        
+        return "{0}  {1}  {2}".format(time, self.cls, self.name)
+
+
+# FUNCTIONS
+
+
+def delta2str(delta):
+    h, rem = divmod(delta.total_seconds(), 3600)
+    m, s = divmod(rem, 60)
+    return "{: 4}:{:02}:{:02}".format(int(h), int(m), int(s))
+
+
+def get_rounded_date():
+    now = datetime.now()
+    now = now.replace(microsecond=0)
+    return now
+
+
+def get_day():
+    now = datetime.now()
+    return now.replace(microsecond=0, second=0, minute=0, hour=0)
+
+
+def start(t, name):
+    with open(LOG_PATH, 'a') as f:
+        now = get_rounded_date()
+        abbrev = TYPE_ABBREV[TYPES.index(t)]
+        f.write("{0}  -  {1}  -  {2}\n".format(abbrev, name, str(now)))
+
+
+def stop():
+    with open(LOG_PATH, 'rb+') as f:
+        now = get_rounded_date()
+        f.seek(-len(os.linesep), os.SEEK_END)
+        f.write(bytes("  -  {0}".format(str(now)) + os.linesep, 'utf-8'))
+
+
+def process_data(settings):
+    group_key = KEYS[settings.group]
+    groups = dict()
+    with open(LOG_PATH, 'r') as f:
+        for line in f:
+            e = Element(line)
+
+            if not e.valid:
+                continue
+            if not in_filter(e, settings):
+                continue
+            if not within_cutoff(e.day, settings.time):
+                continue
+            
+            g_key = group_key(e)
+            if g_key not in groups.keys():
+                g_name = display_name(g_key, settings.group)
+                groups[g_key] = Group(g_name, settings)
+            groups[g_key].add(e)
+    return groups.values()
+
+
+def in_filter(e, settings):
+    filt_func = KEYS[settings.filter_target]
+    val = filt_func(e)
+    tgt = settings.filter_target
+    exp = settings.filter_exp
+
+    out = display_name(exp, None) == display_name(val, tgt)
+    return out
+
+
+def display_name(thing, t):
+    if t == "day":
+        return thing.strftime("%Y-%m-%d")
+    if t == "week":
+        return thing.strftime("Week %V")
+    if t == "month":
+        return thing.strftime("%B %Y")
+    if t == "type":
+        return TYPES[thing].upper()
+    if t == "class":
+        return thing.upper()
+    return thing.upper()
+
+
+def within_cutoff(dt, cutoff):
+    cut_dt = None
+    if cutoff == "day":
+        cut_dt = get_day()
+    elif cutoff.endswith("days"):
+        offset = int(cutoff[:-4]) - 1
+        cut_dt = get_day() - timedelta(days=offset)
+    elif cutoff == "yesterday":
+        cut_dt = get_day() - timedelta(days=1)
+    elif cutoff == "week":
+        d = get_day()
+        offset = d.weekday()
+        cut_dt = d - timedelta(days=offset)
+    elif cutoff.endswith("weeks"):
+        d = get_day()
+        weeks = int(cutoff[:-5]) - 1
+        offset = d.weekday() + 7 * weeks
+        cut_dt = get_day() - timedelta(days=offset)
+    elif cutoff == "month":
+        d = get_day()
+        offset = d.day - 1
+        cut_dt = d - timedelta(days=offset)
+    elif cutoff == "all":
+        cut_dt = datetime.min
+    else:
+        cut_dt = datetime.fromisoformat(cutoff)
+
+    return dt >= cut_dt
+
+
+def view(settings, data):
+    for g in data:
+        g.sort()
+        print(g)
+
+
+def main(args):
+    if args.cmd:
+        if args.cmd == "start":
+            start(args.type, args.task)
+        elif args.cmd == "stop":
+            stop()
+    else:
+        settings = Settings(args)
+        data = process_data(settings)
+        view(settings, data)
+
+
+# ARGPARSE
+
+
+# Top-level parser
+parser = argparse.ArgumentParser()
+parser.add_argument("-f", metavar="FILTER", nargs=1,
+                    help="Filter tasks to only include those that match the filter")
+parser.add_argument("-g", metavar="GROUP", nargs=1, choices=GROUPS,
+                    help="Group tasks by a given expression")
+parser.add_argument("-s", metavar="SORT", nargs=1, choices=SORTS,
+                    help="Sort tasks within groups by an expression")
+parser.add_argument("-t", metavar="TIME", nargs=1,
+                    help="Only include data from the past TIME")
+parser.add_argument("-l", metavar="LIMIT", nargs=1, type=int,
+                    help="Limit each group to LIMIT items")
+
+parser.set_defaults(cmd=None)
+subparsers = parser.add_subparsers(title="subcommands", help='sub-command --help')
+
+# Subparser for 'start'
+parser_start = subparsers.add_parser('start', help='Starts a given task')
+parser_start.add_argument("type", choices=TYPES,
+                          help="The type of task to start")
+parser_start.add_argument("task", help="Task name, formatted as 'CLASS Name'")
+parser_start.set_defaults(cmd='start')
+
+# Subparser for 'stop;
+parser_stop = subparsers.add_parser('stop', help='Stops the currently running task')
+parser_stop.set_defaults(cmd='stop')
+
+main(parser.parse_args())
