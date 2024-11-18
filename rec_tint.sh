@@ -19,7 +19,7 @@ reset()
 set_status()
 {
     sed -i "s/separator_color = .*/separator_color = #$1 80/1" $TINTRC
-    sed -i "s/button_text = .*/button_text = $2/1" $TINTRC
+#    sed -i "s/button_text = .*/button_text = $2/1" $TINTRC
     reset
 }
 
