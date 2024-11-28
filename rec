@@ -9,7 +9,7 @@ import os
 # GLOBALS
 
 
-LOG_PATH = "/home/zoe/Documents/org/workrec.log"
+LOG_PATH = os.path.expanduser("~/Documents/org/workrec.log")
 WORK = 0
 FUN = 1
 TYPE_ABBREV = ["WRK", "FUN"]
